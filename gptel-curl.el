@@ -122,6 +122,29 @@ the response is inserted into the current buffer after point."
         (message "Stopped gptel request in buffer %S" (buffer-name buf)))
     (message "No gptel request associated with buffer %S" (buffer-name buf))))
 
+(defun gptel--postprocess-response (info)
+  (let* ((tracking-marker (plist-get info :tracking-marker))
+	 (start-marker (plist-get info :position))
+	 (http-status (plist-get info :http-status))
+	 (accumulated-response (plist-get info :accumulated-response))
+	 (buffer (marker-buffer start-marker)))
+    (when (and (equal http-status "200")
+	       accumulated-response
+	       (eq (buffer-local-value
+                    'major-mode
+                    (plist-get info :buffer))
+                   'org-mode))
+      ;; (message "accumulated: %s" accumulated-response)
+      (with-current-buffer buffer
+	(save-excursion
+	  (delete-region (+ start-marker 2)  tracking-marker)
+	  (goto-char tracking-marker)
+	  (setq response (gptel--convert-markdown->org accumulated-response))
+	  (put-text-property 0 (length response) 'gptel 'response response)
+	  (insert response)
+	  )
+	))))
+
 ;; TODO: Separate user-messaging from this function
 (defun gptel-curl--stream-cleanup (process _status)
   "Process sentinel for GPTel curl requests.
@@ -131,6 +154,7 @@ PROCESS and _STATUS are process parameters."
     (when gptel--debug
       (with-current-buffer proc-buf
         (clone-buffer "*gptel-error*" 'show)))
+    (gptel--postprocess-response (alist-get process gptel-curl--process-alist))
     (let* ((info (alist-get process gptel-curl--process-alist))
            (gptel-buffer (plist-get info :buffer))
            (tracking-marker (plist-get info :tracking-marker))
@@ -184,23 +208,26 @@ See `gptel--url-get-response' for details."
         (tracking-marker (plist-get info :tracking-marker))
         (transformer (plist-get info :transformer)))
     (when response
-        (with-current-buffer (marker-buffer start-marker)
-          (save-excursion
-            (unless tracking-marker
-              (gptel--update-header-line " Typing..." 'success)
-              (goto-char start-marker)
-              (unless (or (bobp) (plist-get info :in-place))
-                (insert "\n\n"))
-              (setq tracking-marker (set-marker (make-marker) (point)))
-              (set-marker-insertion-type tracking-marker t)
-              (plist-put info :tracking-marker tracking-marker))
-            
-            (when transformer
-              (setq response (funcall transformer response)))
-            
-            (put-text-property 0 (length response) 'gptel 'response response)
-            (goto-char tracking-marker)
-            (insert response))))))
+      (with-current-buffer (marker-buffer start-marker)
+	  (save-excursion
+	    (unless tracking-marker
+	      (gptel--update-header-line " Typing..." 'success)
+	      (goto-char start-marker)
+	      (unless (or (bobp) (plist-get info :in-place))
+		(insert "\n\n"))
+	      (setq tracking-marker (set-marker (make-marker) (point)))
+	      (set-marker-insertion-type tracking-marker t)
+	      (plist-put info :tracking-marker tracking-marker))
+
+	    (setq accumulated-response (concat accumulated-response response))
+	    (plist-put info :accumulated-response accumulated-response)
+
+	    (when transformer
+	      (setq response (funcall transformer response)))
+
+	    (put-text-property 0 (length response) 'gptel 'response response)
+	    (goto-char tracking-marker)
+	    (insert response))))))
 
 (defun gptel-curl--stream-filter (process output)
   (let* ((proc-info (alist-get process gptel-curl--process-alist)))
